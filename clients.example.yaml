@@ -1,0 +1,20 @@
+# Registry of clients. Copy this to clients.yaml and fill with real data.
+# clients.yaml is gitignored because it contains PII (emails).
+#
+# Key (e.g. "john-smith") is used to match invoice filenames.
+# The key must appear anywhere in the filename (case-insensitive).
+# Examples that match key "john-smith":
+#   invoice-John-Smith-032026.pdf
+#   2025-04_john-smith.pdf
+
+john-smith:
+  name: John Smith          # personal name — shown in email greeting
+  email: john@example.com  # REQUIRED — where the signature request is sent
+
+# Optional fields (pydantic fills defaults if omitted):
+#   cc: []                  # list of emails CC'd on the signed copy
+#   language: en            # en, fr, es, de, pl, pt, da, nl, it, ru, sv, tr, sk
+#   custom_subject: null    # overrides the default email subject
+#   custom_message: null    # overrides the default email body
+#   signature_fields:       # inline placement (omit to append a signature page)
+#     - {x: 143.0, y: 762.0, page: 1}
