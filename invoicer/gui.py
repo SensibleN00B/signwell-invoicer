@@ -24,6 +24,7 @@ import customtkinter as ctk
 
 from invoicer.config import Client, ClientsRegistry, Settings, infer_client_key
 from invoicer.sender import send_invoice, sha256_file
+from invoicer.signwell import SignWellError
 from invoicer.tracking import Tracker
 
 
@@ -41,6 +42,8 @@ class InvoiceItem:
     client: Client | None
     status: str = "─"
     selected: bool = True
+    document_id: str | None = None          # populated from tracker at scan time
+    _pdf_url: str = ""                      # stashed during refresh for download worker
     checkbox_var: BooleanVar = field(default_factory=BooleanVar)
     status_label: ctk.CTkLabel | None = field(default=None, repr=False)
     checkbox_widget: ctk.CTkCheckBox | None = field(default=None, repr=False)
@@ -64,6 +67,9 @@ class InvoicerApp(ctk.CTk):
         self._registry: ClientsRegistry | None = None
         self._queue: queue.Queue = queue.Queue()
         self._is_sending = False
+        self._is_refreshing = False
+        self._is_downloading = False
+        self._signed_folder_var = StringVar()
 
         self._build_ui()
         self._load_settings()
@@ -113,6 +119,17 @@ class InvoicerApp(ctk.CTk):
             controls, values=["TEST", "PROD"], variable=self._mode_var, width=140
         ).grid(row=1, column=3, padx=(4, 12), pady=8)
 
+        # Row 2: Signed Folder
+        ctk.CTkLabel(controls, text="Signed Folder:", width=90, anchor="e").grid(
+            row=2, column=0, padx=(12, 6), pady=8
+        )
+        ctk.CTkEntry(controls, textvariable=self._signed_folder_var).grid(
+            row=2, column=1, padx=4, pady=8, sticky="ew"
+        )
+        ctk.CTkButton(
+            controls, text="Browse", width=80, command=self._browse_signed_folder
+        ).grid(row=2, column=2, padx=4, pady=8)
+
         # --- Scrollable invoice table ---
         self._table = ctk.CTkScrollableFrame(self, fg_color=("gray90", "gray17"))
         self._table.grid(row=1, column=0, sticky="nsew", padx=15, pady=4)
@@ -148,6 +165,24 @@ class InvoicerApp(ctk.CTk):
             fg_color="transparent", border_width=2,
             command=self._clear_all,
         ).pack(side="left")
+
+        ctk.CTkFrame(actions, fg_color="transparent", width=16).pack(side="left")
+
+        self._refresh_btn = ctk.CTkButton(
+            actions, text="↻", width=36, height=36,
+            fg_color="transparent", border_width=2,
+            font=ctk.CTkFont(size=18),
+            command=self._refresh_statuses,
+        )
+        self._refresh_btn.pack(side="left", padx=(0, 6))
+
+        self._download_btn = ctk.CTkButton(
+            actions, text="Download Signed", width=150, height=36,
+            fg_color="#1565c0", hover_color="#0d47a1",
+            command=self._download_signed,
+        )
+        self._download_btn.pack(side="left")
+
         self._count_label = ctk.CTkLabel(actions, text="", text_color="gray60")
         self._count_label.pack(side="right")
 
@@ -183,6 +218,11 @@ class InvoicerApp(ctk.CTk):
         )
         if path:
             self._clients_var.set(path)
+
+    def _browse_signed_folder(self) -> None:
+        path = filedialog.askdirectory(title="Select folder for signed PDFs")
+        if path:
+            self._signed_folder_var.set(path)
 
     # ── Scan ───────────────────────────────────────────────────────────────────
 
@@ -248,10 +288,18 @@ class InvoicerApp(ctk.CTk):
             if tracker and client_key:
                 file_hash = sha256_file(pdf_path)
                 prior = tracker.find_by_file_hash(file_hash, test_mode=test_mode, client_key=client_key)
-                if prior is not None and prior["status"] in ("sent", "completed"):
-                    item.status = "✓ sent"
-                    item.selected = False
-                    item.checkbox_var.set(False)
+                if prior is not None:
+                    item.document_id = prior["document_id"]
+                    prior_status = prior["status"]
+                    if prior_status in ("sent", "completed", "downloaded"):
+                        item.selected = False
+                        item.checkbox_var.set(False)
+                    if prior_status == "sent":
+                        item.status = "✓ sent"
+                    elif prior_status == "completed":
+                        item.status = "✓ signed"
+                    elif prior_status == "downloaded":
+                        item.status = "✓ downloaded"
 
             self._items.append(item)
             self._add_row(item)
@@ -267,8 +315,12 @@ class InvoicerApp(ctk.CTk):
 
         status_colors = {
             "✓ sent": "#4caf50",
+            "✓ signed": "#66bb6a",
+            "✓ downloaded": "#26a69a",
             "⚠ already sent": "#ff9800",
             "✗ error": "#f44336",
+            "✗ declined": "#e53935",
+            "✗ cancelled": "#e53935",
             "sending…": "#90caf9",
         }
         checkbox_enabled = item.client_key is not None and item.status == "─"
@@ -410,8 +462,12 @@ class InvoicerApp(ctk.CTk):
         """Called every 100 ms on the main thread. Drains the worker queue."""
         status_colors = {
             "✓ sent": "#4caf50",
+            "✓ signed": "#66bb6a",
+            "✓ downloaded": "#26a69a",
             "⚠ already sent": "#ff9800",
             "✗ error": "#f44336",
+            "✗ declined": "#e53935",
+            "✗ cancelled": "#e53935",
             "sending…": "#90caf9",
         }
         try:
@@ -422,6 +478,7 @@ class InvoicerApp(ctk.CTk):
                 elif msg["type"] == "status":
                     item: InvoiceItem = msg["item"]
                     item.status = msg["status"]
+                    item._pdf_url = msg.get("pdf_url", "")
                     if item.status_label:
                         item.status_label.configure(
                             text=item.status,
@@ -431,6 +488,14 @@ class InvoicerApp(ctk.CTk):
                     self._is_sending = False
                     self._send_btn.configure(state="normal", text="Send Selected")
                     self._log_write("Done.")
+                elif msg["type"] == "refresh_done":
+                    self._is_refreshing = False
+                    self._refresh_btn.configure(state="normal")
+                    self._log_write("Refresh complete.")
+                elif msg["type"] == "download_done":
+                    self._is_downloading = False
+                    self._download_btn.configure(state="normal", text="Download Signed")
+                    self._log_write("Download complete.")
         except queue.Empty:
             pass
         self.after(100, self._process_queue)
@@ -442,6 +507,115 @@ class InvoicerApp(ctk.CTk):
         self._log.insert("end", text + "\n")
         self._log.see("end")
         self._log.configure(state="disabled")
+
+    # ── Refresh statuses ───────────────────────────────────────────────────────
+
+    def _refresh_statuses(self) -> None:
+        if self._is_refreshing or not self._settings:
+            return
+        self._is_refreshing = True
+        self._refresh_btn.configure(state="disabled")
+        self._log_write("Refreshing statuses…")
+        threading.Thread(target=self._refresh_worker, daemon=True).start()
+
+    def _refresh_worker(self) -> None:
+        from invoicer.signwell import SignWellClient
+
+        items_with_id = [it for it in self._items if it.document_id]
+        if not items_with_id:
+            self._queue.put({"type": "log", "text": "No tracked documents to refresh."})
+            self._queue.put({"type": "refresh_done"})
+            return
+
+        tracker = Tracker(self._settings.db_path)
+        try:
+            with SignWellClient(self._settings.signwell_api_key) as sw:
+                for item in items_with_id:
+                    try:
+                        doc = sw.get_document(item.document_id)
+                        api_status = doc.get("status", "")
+                        if api_status == "completed":
+                            tracker.update_status(item.document_id, "completed")
+                            pdf_url = doc.get("completed_pdf_url") or ""
+                            self._queue.put({
+                                "type": "status", "item": item,
+                                "status": "✓ signed", "pdf_url": pdf_url,
+                            })
+                        elif api_status in ("declined", "cancelled"):
+                            tracker.update_status(item.document_id, api_status)
+                            self._queue.put({
+                                "type": "status", "item": item,
+                                "status": f"✗ {api_status}", "pdf_url": "",
+                            })
+                    except Exception as exc:
+                        self._queue.put({
+                            "type": "log",
+                            "text": f"⚠ Refresh error for {item.document_id[:12]}…: {exc}",
+                        })
+        finally:
+            self._queue.put({"type": "refresh_done"})
+
+    # ── Download signed ────────────────────────────────────────────────────────
+
+    def _download_signed(self) -> None:
+        signed_folder_str = self._signed_folder_var.get().strip()
+        if not signed_folder_str:
+            self._log_write("⚠ Set a Signed Folder before downloading.")
+            return
+        signed_folder = Path(signed_folder_str)
+        if not signed_folder.is_dir():
+            self._log_write(f"⚠ Not a directory: {signed_folder}")
+            return
+        if self._is_downloading or not self._settings:
+            return
+
+        targets = [it for it in self._items if it.status == "✓ signed" and it.document_id]
+        if not targets:
+            self._log_write("No signed invoices ready to download. Run ↻ Refresh first.")
+            return
+
+        self._is_downloading = True
+        self._download_btn.configure(state="disabled", text="Downloading…")
+        self._log_write(f"Downloading {len(targets)} signed PDF(s)…")
+        threading.Thread(
+            target=self._download_worker, args=(targets, signed_folder), daemon=True,
+        ).start()
+
+    def _download_worker(self, targets: list[InvoiceItem], signed_folder: Path) -> None:
+        from invoicer.downloader import download_signed_pdf
+        from invoicer.signwell import SignWellClient
+
+        tracker = Tracker(self._settings.db_path)
+        try:
+            with SignWellClient(self._settings.signwell_api_key) as sw:
+                for item in targets:
+                    try:
+                        pdf_url = item._pdf_url
+                        if not pdf_url:
+                            doc = sw.get_document(item.document_id)
+                            pdf_url = doc.get("completed_pdf_url", "")
+                        if not pdf_url:
+                            self._queue.put({
+                                "type": "log",
+                                "text": f"⚠ No PDF URL for {item.pdf_path.name}",
+                            })
+                            continue
+                        saved = download_signed_pdf(
+                            document_id=item.document_id,
+                            pdf_url=pdf_url,
+                            signed_folder=signed_folder,
+                            tracker=tracker,
+                            sw_client=sw,
+                        )
+                        self._queue.put({
+                            "type": "status", "item": item,
+                            "status": "✓ downloaded", "pdf_url": "",
+                        })
+                        self._queue.put({"type": "log", "text": f"✓ Saved: {saved}"})
+                    except Exception as exc:
+                        self._queue.put({"type": "log", "text": f"✗ {item.pdf_path.name}: {exc}"})
+        finally:
+            self._queue.put({"type": "download_done"})
 
 
 def run_gui() -> None:
