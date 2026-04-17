@@ -5,6 +5,7 @@ clients.yaml
 
 # Local state
 sent.sqlite
+.worktrees/
 sent.sqlite-journal
 invoices/
 
