@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_client ON sent_invoices(client_key);
 CREATE INDEX IF NOT EXISTS idx_hash   ON sent_invoices(file_sha256);
 """
 
-Status = Literal["draft", "sent", "completed", "declined", "cancelled"]
+Status = Literal["draft", "sent", "completed", "declined", "cancelled", "downloaded"]
 
 
 class Tracker:
@@ -128,3 +128,13 @@ class Tracker:
                 "UPDATE sent_invoices SET status = ?, updated_at = ? WHERE document_id = ?",
                 (status, now, document_id),
             )
+
+    def mark_downloaded(self, document_id: str) -> None:
+        self.update_status(document_id, "downloaded")
+
+    def list_completed_not_downloaded(self) -> list[sqlite3.Row]:
+        with self._conn() as c:
+            return c.execute(
+                "SELECT * FROM sent_invoices WHERE status = 'completed'"
+                " ORDER BY created_at DESC"
+            ).fetchall()
