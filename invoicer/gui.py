@@ -146,8 +146,7 @@ class InvoicerApp(ctk.CTk):
         self._table_header = header_row
 
         # --- Actions bar ---
-        # height=50 prevents CTkFrame's default 200px from creating empty space around buttons
-        actions = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="ew", padx=15, pady=4)
 
         self._send_btn = ctk.CTkButton(
@@ -167,7 +166,7 @@ class InvoicerApp(ctk.CTk):
             command=self._clear_all,
         ).pack(side="left")
 
-        ctk.CTkFrame(actions, fg_color="transparent", width=16).pack(side="left")
+        ctk.CTkFrame(actions, fg_color="transparent", width=16, height=36).pack(side="left")
 
         self._refresh_btn = ctk.CTkButton(
             actions, text="↻", width=36, height=36,
