@@ -236,8 +236,8 @@ def status(
         console.print(f"[green]Completed PDF:[/] {doc['completed_pdf_url']}")
 
     # Sync local tracker status
-    if status_value in ("completed", "declined", "cancelled"):
-        tracker.update_status(document_id, status_value)
+    if status_value.lower() in ("completed", "declined", "cancelled"):
+        tracker.update_status(document_id, status_value.lower())
 
 
 @app.command("list")

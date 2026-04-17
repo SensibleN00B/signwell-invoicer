@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS sent_invoices (
     file_path     TEXT NOT NULL,
     file_sha256   TEXT NOT NULL,
     test_mode     INTEGER NOT NULL,  -- 0/1
-    status        TEXT NOT NULL,     -- draft | sent | completed | declined | cancelled
+    status        TEXT NOT NULL,     -- draft | sent | completed | declined | cancelled | downloaded
     created_at    TEXT NOT NULL,     -- ISO-8601 UTC
     updated_at    TEXT NOT NULL
 );

@@ -24,7 +24,7 @@ import customtkinter as ctk
 
 from invoicer.config import Client, ClientsRegistry, Settings, infer_client_key
 from invoicer.sender import send_invoice, sha256_file
-from invoicer.signwell import SignWellError
+from invoicer.signwell import SignWellClient, SignWellError
 from invoicer.tracking import Tracker
 
 
@@ -57,8 +57,8 @@ class InvoicerApp(ctk.CTk):
         os.chdir(get_app_dir())
 
         self.title("SignWell Invoicer")
-        self.geometry("980x660")
-        self.minsize(760, 500)
+        self.geometry("980x500")
+        self.minsize(760, 400)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -88,47 +88,47 @@ class InvoicerApp(ctk.CTk):
 
         # Row 0: PDF folder
         ctk.CTkLabel(controls, text="PDF Folder:", width=90, anchor="e").grid(
-            row=0, column=0, padx=(12, 6), pady=8
+            row=0, column=0, padx=(12, 6), pady=5
         )
         self._dir_var = StringVar()
         ctk.CTkEntry(controls, textvariable=self._dir_var).grid(
-            row=0, column=1, padx=4, pady=8, sticky="ew"
+            row=0, column=1, padx=4, pady=5, sticky="ew"
         )
         ctk.CTkButton(controls, text="Browse", width=80, command=self._browse_dir).grid(
-            row=0, column=2, padx=4, pady=8
+            row=0, column=2, padx=4, pady=5
         )
         ctk.CTkButton(
             controls, text="Scan", width=80,
             fg_color="transparent", border_width=2,
             command=self._scan,
-        ).grid(row=0, column=3, padx=(4, 12), pady=8)
+        ).grid(row=0, column=3, padx=(4, 12), pady=5)
 
         # Row 1: Clients file + mode toggle
         ctk.CTkLabel(controls, text="Clients:", width=90, anchor="e").grid(
-            row=1, column=0, padx=(12, 6), pady=8
+            row=1, column=0, padx=(12, 6), pady=5
         )
         self._clients_var = StringVar(value=str(get_app_dir() / "clients.yaml"))
         ctk.CTkEntry(controls, textvariable=self._clients_var).grid(
-            row=1, column=1, padx=4, pady=8, sticky="ew"
+            row=1, column=1, padx=4, pady=5, sticky="ew"
         )
         ctk.CTkButton(controls, text="Browse", width=80, command=self._browse_clients).grid(
-            row=1, column=2, padx=4, pady=8
+            row=1, column=2, padx=4, pady=5
         )
         self._mode_var = StringVar(value="TEST")
         ctk.CTkSegmentedButton(
             controls, values=["TEST", "PROD"], variable=self._mode_var, width=140
-        ).grid(row=1, column=3, padx=(4, 12), pady=8)
+        ).grid(row=1, column=3, padx=(4, 12), pady=5)
 
         # Row 2: Signed Folder
         ctk.CTkLabel(controls, text="Signed Folder:", width=90, anchor="e").grid(
-            row=2, column=0, padx=(12, 6), pady=8
+            row=2, column=0, padx=(12, 6), pady=5
         )
         ctk.CTkEntry(controls, textvariable=self._signed_folder_var).grid(
-            row=2, column=1, padx=4, pady=8, sticky="ew"
+            row=2, column=1, padx=4, pady=5, sticky="ew"
         )
         ctk.CTkButton(
             controls, text="Browse", width=80, command=self._browse_signed_folder
-        ).grid(row=2, column=2, padx=4, pady=8)
+        ).grid(row=2, column=2, padx=4, pady=5)
 
         # --- Scrollable invoice table ---
         self._table = ctk.CTkScrollableFrame(self, fg_color=("gray90", "gray17"))
@@ -146,7 +146,8 @@ class InvoicerApp(ctk.CTk):
         self._table_header = header_row
 
         # --- Actions bar ---
-        actions = ctk.CTkFrame(self, fg_color="transparent")
+        # height=50 prevents CTkFrame's default 200px from creating empty space around buttons
+        actions = ctk.CTkFrame(self, fg_color="transparent", height=50)
         actions.grid(row=2, column=0, sticky="ew", padx=15, pady=4)
 
         self._send_btn = ctk.CTkButton(
@@ -187,7 +188,7 @@ class InvoicerApp(ctk.CTk):
         self._count_label.pack(side="right")
 
         # --- Log panel ---
-        self._log = ctk.CTkTextbox(self, height=110, state="disabled", wrap="word")
+        self._log = ctk.CTkTextbox(self, height=80, state="disabled", wrap="word")
         self._log.grid(row=3, column=0, sticky="ew", padx=15, pady=(4, 15))
 
     # ── Startup ────────────────────────────────────────────────────────────────
@@ -381,8 +382,11 @@ class InvoicerApp(ctk.CTk):
 
     # ── Send ───────────────────────────────────────────────────────────────────
 
+    def _is_busy(self) -> bool:
+        return self._is_sending or self._is_refreshing or self._is_downloading
+
     def _send_selected(self) -> None:
-        if self._is_sending:
+        if self._is_busy():
             return
 
         pending = [
@@ -447,7 +451,10 @@ class InvoicerApp(ctk.CTk):
                         "text": f"⚠ {item.pdf_path.name} — already sent",
                     })
                 else:
-                    self._queue.put({"type": "status", "item": item, "status": "✓ sent"})
+                    self._queue.put({
+                        "type": "status", "item": item, "status": "✓ sent",
+                        "document_id": result.document_id,
+                    })
                     self._queue.put({
                         "type": "log",
                         "text": f"✓ {item.pdf_path.name} → {result.document_id[:12]}…",
@@ -479,6 +486,8 @@ class InvoicerApp(ctk.CTk):
                     item: InvoiceItem = msg["item"]
                     item.status = msg["status"]
                     item._pdf_url = msg.get("pdf_url", "")
+                    if "document_id" in msg:
+                        item.document_id = msg["document_id"]
                     if item.status_label:
                         item.status_label.configure(
                             text=item.status,
@@ -511,7 +520,7 @@ class InvoicerApp(ctk.CTk):
     # ── Refresh statuses ───────────────────────────────────────────────────────
 
     def _refresh_statuses(self) -> None:
-        if self._is_refreshing or not self._settings:
+        if self._is_busy() or not self._settings:
             return
         self._is_refreshing = True
         self._refresh_btn.configure(state="disabled")
@@ -519,8 +528,6 @@ class InvoicerApp(ctk.CTk):
         threading.Thread(target=self._refresh_worker, daemon=True).start()
 
     def _refresh_worker(self) -> None:
-        from invoicer.signwell import SignWellClient
-
         items_with_id = [it for it in self._items if it.document_id]
         if not items_with_id:
             self._queue.put({"type": "log", "text": "No tracked documents to refresh."})
@@ -528,20 +535,26 @@ class InvoicerApp(ctk.CTk):
             return
 
         tracker = Tracker(self._settings.db_path)
+        self._queue.put({"type": "log", "text": f"  Checking {len(items_with_id)} document(s)…"})
         try:
             with SignWellClient(self._settings.signwell_api_key) as sw:
                 for item in items_with_id:
                     try:
                         doc = sw.get_document(item.document_id)
                         api_status = doc.get("status", "")
-                        if api_status == "completed":
+                        self._queue.put({
+                            "type": "log",
+                            "text": f"  {item.pdf_path.name}: API status = {api_status!r}",
+                        })
+                        api_status_lower = api_status.lower()
+                        if api_status_lower == "completed":
                             tracker.update_status(item.document_id, "completed")
                             pdf_url = doc.get("completed_pdf_url") or ""
                             self._queue.put({
                                 "type": "status", "item": item,
                                 "status": "✓ signed", "pdf_url": pdf_url,
                             })
-                        elif api_status in ("declined", "cancelled"):
+                        elif api_status_lower in ("declined", "cancelled"):
                             tracker.update_status(item.document_id, api_status)
                             self._queue.put({
                                 "type": "status", "item": item,
@@ -566,7 +579,7 @@ class InvoicerApp(ctk.CTk):
         if not signed_folder.is_dir():
             self._log_write(f"⚠ Not a directory: {signed_folder}")
             return
-        if self._is_downloading or not self._settings:
+        if self._is_busy() or not self._settings:
             return
 
         targets = [it for it in self._items if it.status == "✓ signed" and it.document_id]
@@ -583,7 +596,6 @@ class InvoicerApp(ctk.CTk):
 
     def _download_worker(self, targets: list[InvoiceItem], signed_folder: Path) -> None:
         from invoicer.downloader import download_signed_pdf
-        from invoicer.signwell import SignWellClient
 
         tracker = Tracker(self._settings.db_path)
         try:
