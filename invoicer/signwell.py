@@ -81,6 +81,18 @@ class SignWellClient:
         """GET /me — verifies the API key works. Good for a sanity check."""
         return self._get("/me", request_desc="me")
 
+    def download_pdf(self, url: str) -> bytes:
+        """GET an arbitrary URL (signed PDF CDN link) and return raw bytes.
+
+        Uses a plain httpx.get (not the authenticated client) because
+        completed_pdf_url is a pre-signed CDN URL that does not need the
+        X-Api-Key header.
+        """
+        resp = httpx.get(url, timeout=60.0)
+        if not resp.is_success:
+            raise SignWellError(resp.status_code, resp.text, f"download_pdf({url})")
+        return resp.content
+
     # --- Internal --------------------------------------------------------------
 
     def _post(self, path: str, body: dict[str, Any], *, request_desc: str) -> dict[str, Any]:
