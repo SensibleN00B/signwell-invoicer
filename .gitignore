@@ -9,6 +9,9 @@ sent.sqlite
 sent.sqlite-journal
 invoices/
 
+# PyInstaller
+*.spec
+
 # Python
 __pycache__/
 *.py[cod]

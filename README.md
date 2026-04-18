@@ -106,13 +106,15 @@ python run_gui.py
 
 Build a standalone `.exe` (Windows only):
 
-```bat
-build_exe.bat
+```bash
+python build.py
 ```
 
 Output: `dist\SignWell Invoicer\` — a self-contained folder.
 Place `.env` and `clients.yaml` inside that folder before distributing.
 The entry point is `dist\SignWell Invoicer\SignWell Invoicer.exe`.
+
+`build.py` installs all required dependencies automatically, so no venv is needed for building.
 
 The GUI lets you:
 - select a folder of PDF files — client matching happens automatically,
