@@ -30,3 +30,5 @@ build/
 
 docs/
 plan.md
+*.json
+*.db
