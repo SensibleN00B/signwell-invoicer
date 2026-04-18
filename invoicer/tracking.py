@@ -35,6 +35,16 @@ CREATE INDEX IF NOT EXISTS idx_hash   ON sent_invoices(file_sha256);
 
 Status = Literal["draft", "sent", "completed", "declined", "cancelled", "downloaded"]
 
+# Monotonic lifecycle: status may only move forward (higher rank).
+_STATUS_RANK: dict[str, int] = {
+    "draft": 0,
+    "sent": 1,
+    "completed": 2,
+    "declined": 3,   # terminal failure — overrides draft/sent/completed
+    "cancelled": 3,
+    "downloaded": 4, # terminal success — nothing can override this
+}
+
 
 class Tracker:
     def __init__(self, db_path: Path) -> None:
@@ -122,11 +132,23 @@ class Tracker:
             )
 
     def update_status(self, document_id: str, status: Status) -> None:
+        """Advance document status forward in the lifecycle. Never downgrades."""
+        new_rank = _STATUS_RANK.get(status, -1)
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as c:
             c.execute(
-                "UPDATE sent_invoices SET status = ?, updated_at = ? WHERE document_id = ?",
-                (status, now, document_id),
+                "UPDATE sent_invoices SET status = ?, updated_at = ?"
+                " WHERE document_id = ? AND ("
+                "   CASE status"
+                "     WHEN 'draft'      THEN 0"
+                "     WHEN 'sent'       THEN 1"
+                "     WHEN 'completed'  THEN 2"
+                "     WHEN 'declined'   THEN 3"
+                "     WHEN 'cancelled'  THEN 3"
+                "     WHEN 'downloaded' THEN 4"
+                "     ELSE -1 END"
+                " ) < ?",
+                (status, now, document_id, new_rank),
             )
 
     def mark_downloaded(self, document_id: str) -> None:

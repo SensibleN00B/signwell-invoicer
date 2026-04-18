@@ -12,6 +12,7 @@ Threading model:
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import sys
@@ -33,6 +34,24 @@ def get_app_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path.cwd()
+
+
+_PREFS_FILE = get_app_dir() / "gui_prefs.json"
+_PREFS_KEYS = ("pdf_folder", "clients_file", "signed_folder")
+
+
+def _load_prefs() -> dict:
+    try:
+        return json.loads(_PREFS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_prefs(prefs: dict) -> None:
+    try:
+        _PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+    except Exception:
+        pass
 
 
 @dataclass
@@ -72,7 +91,9 @@ class InvoicerApp(ctk.CTk):
 
         self._build_ui()
         self._load_settings()
+        self._restore_prefs()
         self.after(100, self._process_queue)
+        self.bind_all("<MouseWheel>", self._table_scroll_handler, add="+")
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -202,12 +223,29 @@ class InvoicerApp(ctk.CTk):
             self._log_write(f"⚠ Settings warning: {exc}")
             self._log_write("  Make sure .env is in the same folder as this app.")
 
+    def _restore_prefs(self) -> None:
+        prefs = _load_prefs()
+        if pdf_folder := prefs.get("pdf_folder"):
+            self._dir_var.set(pdf_folder)
+        if clients_file := prefs.get("clients_file"):
+            self._clients_var.set(clients_file)
+        if signed_folder := prefs.get("signed_folder"):
+            self._signed_folder_var.set(signed_folder)
+
+    def _persist_prefs(self) -> None:
+        _save_prefs({
+            "pdf_folder": self._dir_var.get(),
+            "clients_file": self._clients_var.get(),
+            "signed_folder": self._signed_folder_var.get(),
+        })
+
     # ── Browse buttons ─────────────────────────────────────────────────────────
 
     def _browse_dir(self) -> None:
         path = filedialog.askdirectory(title="Select PDF folder")
         if path:
             self._dir_var.set(path)
+            self._persist_prefs()
             self._scan()
 
     def _browse_clients(self) -> None:
@@ -217,11 +255,13 @@ class InvoicerApp(ctk.CTk):
         )
         if path:
             self._clients_var.set(path)
+            self._persist_prefs()
 
     def _browse_signed_folder(self) -> None:
         path = filedialog.askdirectory(title="Select folder for signed PDFs")
         if path:
             self._signed_folder_var.set(path)
+            self._persist_prefs()
 
     # ── Scan ───────────────────────────────────────────────────────────────────
 
@@ -306,6 +346,22 @@ class InvoicerApp(ctk.CTk):
         matched = sum(1 for it in self._items if it.client_key)
         self._log_write(f"{matched}/{len(self._items)} PDFs matched to clients.")
         self._update_count_label()
+
+    def _table_scroll_handler(self, event) -> None:
+        """Global bind_all handler: scroll the table only when the cursor is over it.
+
+        CTkScrollableFrame's built-in bind_all handler uses check_if_master_is_canvas
+        to decide whether to scroll, but that check fails for some CTk internal widgets
+        (CTkLabel/CTkCheckBox render on internal CTkCanvas whose .master chain breaks).
+        Coordinate-based detection is more reliable.
+        """
+        frame = self._table._parent_frame
+        frame_x, frame_y = frame.winfo_rootx(), frame.winfo_rooty()
+        frame_w, frame_h = frame.winfo_width(), frame.winfo_height()
+        if frame_x <= event.x_root <= frame_x + frame_w and frame_y <= event.y_root <= frame_y + frame_h:
+            canvas = self._table._parent_canvas
+            if canvas.yview() != (0.0, 1.0):
+                canvas.yview_scroll(-event.delta, "units")
 
     def _add_row(self, item: InvoiceItem) -> None:
         row = ctk.CTkFrame(self._table, fg_color="transparent")
@@ -545,11 +601,12 @@ class InvoicerApp(ctk.CTk):
                         })
                         api_status_lower = api_status.lower()
                         if api_status_lower == "completed":
-                            tracker.update_status(item.document_id, "completed")
-                            self._queue.put({
-                                "type": "status", "item": item,
-                                "status": "✓ signed",
-                            })
+                            if item.status != "✓ downloaded":
+                                tracker.update_status(item.document_id, "completed")
+                                self._queue.put({
+                                    "type": "status", "item": item,
+                                    "status": "✓ signed",
+                                })
                         elif api_status_lower in ("declined", "cancelled"):
                             tracker.update_status(item.document_id, api_status)
                             self._queue.put({
