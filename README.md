@@ -110,7 +110,9 @@ Build a standalone `.exe` (Windows only):
 build_exe.bat
 ```
 
-Place `.env` and `clients.yaml` next to the `.exe` before distributing.
+Output: `dist\SignWell Invoicer\` — a self-contained folder.
+Place `.env` and `clients.yaml` inside that folder before distributing.
+The entry point is `dist\SignWell Invoicer\SignWell Invoicer.exe`.
 
 The GUI lets you:
 - select a folder of PDF files — client matching happens automatically,
