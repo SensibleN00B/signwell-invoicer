@@ -43,7 +43,6 @@ class InvoiceItem:
     status: str = "─"
     selected: bool = True
     document_id: str | None = None          # populated from tracker at scan time
-    _pdf_url: str = ""                      # stashed during refresh for download worker
     checkbox_var: BooleanVar = field(default_factory=BooleanVar)
     status_label: ctk.CTkLabel | None = field(default=None, repr=False)
     checkbox_widget: ctk.CTkCheckBox | None = field(default=None, repr=False)
@@ -484,7 +483,6 @@ class InvoicerApp(ctk.CTk):
                 elif msg["type"] == "status":
                     item: InvoiceItem = msg["item"]
                     item.status = msg["status"]
-                    item._pdf_url = msg.get("pdf_url", "")
                     if "document_id" in msg:
                         item.document_id = msg["document_id"]
                     if item.status_label:
@@ -548,10 +546,9 @@ class InvoicerApp(ctk.CTk):
                         api_status_lower = api_status.lower()
                         if api_status_lower == "completed":
                             tracker.update_status(item.document_id, "completed")
-                            pdf_url = doc.get("completed_pdf_url") or ""
                             self._queue.put({
                                 "type": "status", "item": item,
-                                "status": "✓ signed", "pdf_url": pdf_url,
+                                "status": "✓ signed",
                             })
                         elif api_status_lower in ("declined", "cancelled"):
                             tracker.update_status(item.document_id, api_status)
@@ -601,14 +598,14 @@ class InvoicerApp(ctk.CTk):
             with SignWellClient(self._settings.signwell_api_key) as sw:
                 for item in targets:
                     try:
-                        pdf_url = item._pdf_url
-                        if not pdf_url:
-                            doc = sw.get_document(item.document_id)
-                            pdf_url = doc.get("completed_pdf_url", "")
+                        pdf_url = sw.get_completed_pdf_url(item.document_id) or ""
                         if not pdf_url:
                             self._queue.put({
                                 "type": "log",
-                                "text": f"⚠ No PDF URL for {item.pdf_path.name}",
+                                "text": (
+                                    f"⚠ {item.pdf_path.name}: PDF not ready yet"
+                                    f" — try again in a few seconds"
+                                ),
                             })
                             continue
                         saved = download_signed_pdf(

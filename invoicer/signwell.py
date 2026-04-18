@@ -81,6 +81,18 @@ class SignWellClient:
         """GET /me — verifies the API key works. Good for a sanity check."""
         return self._get("/me", request_desc="me")
 
+    def get_completed_pdf_url(self, document_id: str) -> str | None:
+        """GET /documents/{id}/completed_pdf/?url_only=true — returns CDN URL or None.
+
+        SignWell generates the final PDF a few seconds after completion.
+        Returns None (not raises) if the file isn't ready yet (400 response).
+        """
+        resp = self._http.get(f"/documents/{document_id}/completed_pdf/", params={"url_only": "true"})
+        if resp.status_code == 400:
+            return None
+        self._parse(resp, f"get_completed_pdf_url({document_id})")
+        return resp.json().get("file_url")
+
     def download_pdf(self, url: str) -> bytes:
         """GET an arbitrary URL (signed PDF CDN link) and return raw bytes.
 
